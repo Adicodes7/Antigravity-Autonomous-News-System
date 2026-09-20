@@ -3,7 +3,7 @@ name: Autonomous News Scheduler
 on:
   schedule:
     # Approximate: GitHub cron is not guaranteed to the minute and can be delayed.
-    - cron: "* * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 permissions:
