@@ -1,0 +1,16 @@
+streamlit
+requests
+python-dotenv
+openai
+schedule
+faiss-cpu
+crewai
+google-generativeai
+langchain
+langchain-community
+crewai-tools
+langchain-google-genai
+plotly
+textblob
+streamlit-extras
+fpdf2
