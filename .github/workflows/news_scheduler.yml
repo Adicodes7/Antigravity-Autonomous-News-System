@@ -1,1 +1,119 @@
-name: Autonomous News Scheduler on: schedule: # Approximate: GitHub cron is not guaranteed to the minute and can be delayed. - cron: "0 0 * * *" workflow_dispatch: permissions: contents: write jobs: run-news-automation: runs-on: ubuntu-latest timeout-minutes: 30 steps: - name: Checkout repository uses: actions/checkout@v4 - name: Set up Python uses: actions/setup-python@v5 with: python-version: "3.11" - name: Install dependencies run: | python -m pip install --upgrade pip pip install -r requirements.txt - name: Verify required secrets are present env: GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }} SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }} SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }} SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }} run: | missing=0 for name in GEMINI_API_KEY SERPER_API_KEY SENDER_EMAIL SENDER_PASSWORD; do if [ -z "${!name}" ]; then echo "Missing required secret: $name" missing=1 else echo "Secret present: $name" fi done if [ "$missing" -ne 0 ]; then echo "Create the missing repository secrets, then re-run this workflow." exit 1 fi - name: Run autonomous news pipeline once env: GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }} GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }} GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }} SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }} SERPER_API_KEY_2: ${{ secrets.SERPER_API_KEY_2 }} SERPER_API_KEY_3: ${{ secrets.SERPER_API_KEY_3 }} SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }} SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }} AUTOMATION_EMAIL: ${{ secrets.AUTOMATION_EMAIL }} NEWS_TOPICS: ${{ vars.NEWS_TOPICS }} NEWS_LANGUAGE: ${{ vars.NEWS_LANGUAGE }} NEWS_FREQUENCY: ${{ vars.NEWS_FREQUENCY }} GITHUB_EVENT_NAME: ${{ github.event_name }} run: | echo "Executing python run_automation.py" python run_automation.py - name: Persist memory and key-rotation state if: always() run: | git config user.name "github-actions[bot]" git config user.email "41898282+github-actions[bot]@users.noreply.github.com" git add -- news_memory.json api_key_index.json automation_state.json if git diff --cached --quiet; then echo "No state file changes to persist." exit 0 fi git commit -m "chore: persist news memory and automation state" git pull --rebase --autostash origin "${GITHUB_REF_NAME}" git push
+name: Autonomous News Scheduler
+
+on:
+  schedule:
+    # Run every 5 minutes.
+    # scheduler.py decides whether an email is actually due.
+    - cron: "0 0 * * *"  
+
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Force the news pipeline to run and bypass the frequency window"
+        required: false
+        default: "true"
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: autonomous-news-scheduler
+  cancel-in-progress: false
+
+jobs:
+  news-digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      # API credentials
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
+
+      # Email credentials
+      SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+      SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
+
+      # Optional configuration overrides.
+      # These should only be used if your shared configuration
+      # mechanism does not provide these values.
+      AUTOMATION_EMAIL: ${{ secrets.AUTOMATION_EMAIL }}
+      NEWS_TOPICS: ${{ secrets.NEWS_TOPICS }}
+      NEWS_LANGUAGE: ${{ secrets.NEWS_LANGUAGE }}
+      NEWS_FREQUENCY: ${{ secrets.NEWS_FREQUENCY }}
+
+      # Manual workflow runs can force execution.
+      FORCE_AUTOMATION: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Show scheduler configuration
+        run: |
+          echo "=========================================="
+          echo "Autonomous News Scheduler"
+          echo "=========================================="
+          echo "Event: ${{ github.event_name }}"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "UTC time: $(date -u)"
+          echo "Frequency configured: ${NEWS_FREQUENCY:-not-set}"
+          echo "Topics configured: ${NEWS_TOPICS:-not-set}"
+          echo "Language configured: ${NEWS_LANGUAGE:-not-set}"
+          echo "Recipient configured: $([ -n "$AUTOMATION_EMAIL" ] && echo yes || echo no)"
+          echo "=========================================="
+
+      - name: Run news automation
+        run: |
+          echo "Executing python run_automation.py"
+          python run_automation.py
+
+      - name: Commit updated automation state
+        if: success()
+        run: |
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "State files changed. Committing updated state..."
+
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+            git add automation_state.json
+            git add news_memory.json
+            git add api_key_index.json
+
+            git diff --cached --quiet || git commit -m "chore: update automation state"
+
+            git push
+          else
+            echo "No state changes to commit."
+          fi
+
+      - name: Scheduler completed
+        if: success()
+        run: |
+          echo "=========================================="
+          echo "Scheduler workflow completed successfully."
+          echo "=========================================="
+
+      - name: Scheduler failed
+        if: failure()
+        run: |
+          echo "=========================================="
+          echo "Scheduler workflow FAILED."
+          echo "Check the previous step for the actual error."
+          echo "=========================================="
